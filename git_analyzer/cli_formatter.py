@@ -1,6 +1,7 @@
 """
 Terminal UI formatting and reporting using Rich.
-Provides GitHub-inspired CLI tables, summary cards, and visual progress bars.
+Provides GitHub-inspired CLI tables, summary cards, language distribution bars,
+and VSCodeCounter-style folder code breakdowns.
 """
 
 from datetime import datetime
@@ -12,7 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from .models import ContributorStats, RepoSummary
+from .models import ContributorStats, FolderStats, LanguageStats, RepoSummary
 
 console = Console()
 
@@ -51,7 +52,7 @@ def print_header(summary: RepoSummary, filter_desc: Optional[str] = None):
 
     content = f"""[bold white]Repository:[/bold white] [bold cyan]{summary.repo_name}[/bold cyan] ([dim]{summary.repo_path}[/dim])
 [bold white]Branch/Ref:[/bold white] [green]{summary.current_branch}[/green]   |   [bold white]Latest Commit:[/bold white] {head_info}
-[bold white]Date Span:[/bold white]  {date_range_str}   |   [bold white]Blamed Files:[/bold white] {blame_status}"""
+[bold white]Date Span:[/bold white]  {date_range_str}   |   [bold white]Analyzed Files:[/bold white] {blame_status}"""
 
     if filter_desc:
         content += f"\n[bold yellow]Filters Applied:[/bold yellow] {filter_desc}"
@@ -89,14 +90,9 @@ def print_summary_cards(summary: RepoSummary):
         padding=(0, 1)
     )
 
-    if summary.blame_skipped:
-        p3_content = "[yellow]N/A[/yellow]\n[dim](blame skipped)[/dim]"
-    else:
-        p3_content = f"[bold magenta]{format_number(summary.total_current_lines)}[/bold magenta]\n[dim]lines in latest commit[/dim]"
-
     p3 = Panel(
-        p3_content,
-        title="[bold]Current Code (HEAD)[/bold]",
+        f"[bold magenta]{format_number(summary.total_current_lines)}[/bold magenta]\n[dim]lines in tracked code[/dim]",
+        title="[bold]Total Lines of Code[/bold]",
         border_style="magenta",
         padding=(0, 1)
     )
@@ -115,6 +111,102 @@ def print_summary_cards(summary: RepoSummary):
     )
 
     table.add_row(p1, p2, p3, p4)
+    console.print(table)
+    console.print()
+
+
+def print_language_distribution(summary: RepoSummary, bar_width: int = 55):
+    """
+    Render GitHub-style continuous language distribution bar with exact colors and percentages.
+    """
+    if not summary.language_stats or summary.total_current_lines == 0:
+        return
+
+    total_lines = summary.total_current_lines
+    bar_text = Text()
+    legend_items = []
+
+    top_languages = []
+    other_lines = 0
+
+    for lang in summary.language_stats:
+        pct = (lang.lines / total_lines) * 100
+        if pct >= 1.2 or len(top_languages) < 5:
+            top_languages.append((lang, pct))
+        else:
+            other_lines += lang.lines
+
+    if other_lines > 0:
+        other_pct = (other_lines / total_lines) * 100
+        top_languages.append((LanguageStats(name="Other", color="#8b949e", lines=other_lines), other_pct))
+
+    allocated_width = 0
+    num_langs = len(top_languages)
+    for idx, (lang, pct) in enumerate(top_languages):
+        if idx == num_langs - 1:
+            seg_len = max(1, bar_width - allocated_width)
+        else:
+            seg_len = max(1, int(round((pct / 100.0) * bar_width)))
+            if allocated_width + seg_len > bar_width:
+                seg_len = max(1, bar_width - allocated_width)
+        allocated_width += seg_len
+        bar_text.append("█" * seg_len, style=lang.color)
+
+        legend_items.append(
+            f"[{lang.color}]●[/{lang.color}] [bold white]{lang.name}[/bold white] [dim]{pct:4.1f}%[/dim]"
+        )
+
+    console.print("[bold cyan]💻 Languages[/bold cyan]")
+    console.print(bar_text)
+    console.print("   ".join(legend_items))
+    console.print()
+
+
+def print_folder_distribution(summary: RepoSummary, max_folders: int = 6):
+    """
+    Render VSCodeCounter-style brief table showing the biggest folders and their lines of code.
+    """
+    if not summary.folder_stats or summary.total_current_lines == 0:
+        return
+
+    table = Table(
+        title="[bold cyan]📂 Code Volume by Folder[/bold cyan]",
+        header_style="bold white on #161b22",
+        border_style="#30363d",
+        show_lines=False,
+        expand=True
+    )
+
+    table.add_column("Folder", justify="left", style="white", ratio=3)
+    table.add_column("Files", justify="right", style="cyan", ratio=1)
+    table.add_column("Lines of Code", justify="right", style="magenta", ratio=2)
+    table.add_column("Share", justify="right", ratio=2)
+
+    total_lines = summary.total_current_lines
+    displayed = summary.folder_stats[:max_folders]
+    other_lines = sum(f.lines for f in summary.folder_stats[max_folders:])
+    other_files = sum(f.files_count for f in summary.folder_stats[max_folders:])
+
+    for f in displayed:
+        pct = (f.lines / total_lines) * 100 if total_lines > 0 else 0.0
+        bar = render_mini_bar(f.lines / total_lines if total_lines > 0 else 0.0, width=8)
+        table.add_row(
+            f"[bold]{f.folder_path}[/bold]",
+            format_number(f.files_count),
+            format_number(f.lines),
+            f"{pct:4.1f}% [cyan]{bar}[/cyan]"
+        )
+
+    if other_lines > 0:
+        other_pct = (other_lines / total_lines) * 100
+        other_bar = render_mini_bar(other_lines / total_lines, width=8)
+        table.add_row(
+            f"[dim]Other ({len(summary.folder_stats) - max_folders} folders)[/dim]",
+            format_number(other_files),
+            format_number(other_lines),
+            f"[dim]{other_pct:4.1f}%[/dim] [dim]{other_bar}[/dim]"
+        )
+
     console.print(table)
     console.print()
 

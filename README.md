@@ -13,6 +13,8 @@ GitAnalyzer inspects any local Git repository folder and provides a breakdown of
 - **Lines of Code Churn (+x / -y)**: Lines added, lines deleted, and net change per contributor.
 - **Current Code Ownership (HEAD)**: Surviving lines of code in the latest commit attributable to each author using parallelized `git blame`.
 - **Smart & .gitignore Filtering**: Automatically honors `.gitignore` rules and filters out binaries and vendor lockfiles (e.g. `package-lock.json`, minified JavaScript).
+- **Language Distribution Bar**: Exact GitHub-style colored breakdown bar with canonical language colors and percentages.
+- **Code Volume by Folder**: Compact VSCodeCounter-style breakdown of the biggest folders and their lines of code.
 - **Per-Contributor Timeline Charts**: Interactive Matplotlib visualization showing overall activity over time as well as individual contribution timelines for top contributors.
 - **Flexible Sorting & Exporting**: Sort by commits, additions, deletions, lines owned, net change, or export everything to JSON.
 

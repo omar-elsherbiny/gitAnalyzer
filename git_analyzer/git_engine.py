@@ -1,6 +1,7 @@
 """
 Git engine module for querying and analyzing Git repositories.
-Handles commit parsing, line churn, code ownership (blame), and .gitignore/pattern filtering.
+Handles commit parsing, line churn, code ownership (blame), .gitignore filtering,
+and folder/language code breakdowns.
 """
 
 from collections import defaultdict
@@ -12,7 +13,13 @@ from pathlib import Path
 import subprocess
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from .models import ContributorStats, RepoSummary, TimeBucketStats
+from .models import (
+    ContributorStats,
+    FolderStats,
+    LanguageStats,
+    RepoSummary,
+    TimeBucketStats,
+)
 
 IGNORED_EXTENSIONS = {
     # Images / Media
@@ -40,6 +47,71 @@ IGNORED_PATTERNS = [
     "node_modules/*", "vendor/*", "dist/*", "build/*", ".next/*", ".nuxt/*",
     ".venv/*", "venv/*", "env/*", "__pycache__/*"
 ]
+
+# GitHub Linguist standard language definitions and colors
+LANGUAGE_MAP: Dict[str, Tuple[str, str]] = {
+    # Python
+    ".py": ("Python", "#3572A5"),
+    ".pyw": ("Python", "#3572A5"),
+    ".ipynb": ("Jupyter Notebook", "#DA5B0B"),
+    # TypeScript & JavaScript
+    ".ts": ("TypeScript", "#3178c6"),
+    ".tsx": ("TypeScript", "#3178c6"),
+    ".js": ("JavaScript", "#f1e05a"),
+    ".jsx": ("JavaScript", "#f1e05a"),
+    ".mjs": ("JavaScript", "#f1e05a"),
+    ".cjs": ("JavaScript", "#f1e05a"),
+    # Web & Styles
+    ".html": ("HTML", "#e34c26"),
+    ".htm": ("HTML", "#e34c26"),
+    ".css": ("CSS", "#563d7c"),
+    ".scss": ("SCSS", "#c6538c"),
+    ".sass": ("Sass", "#a53b70"),
+    ".less": ("Less", "#1d365d"),
+    ".vue": ("Vue", "#41b883"),
+    ".svelte": ("Svelte", "#ff3e00"),
+    # Systems & Compiled
+    ".rs": ("Rust", "#dea584"),
+    ".go": ("Go", "#00ADD8"),
+    ".c": ("C", "#555555"),
+    ".h": ("C", "#555555"),
+    ".cpp": ("C++", "#f34b7d"),
+    ".hpp": ("C++", "#f34b7d"),
+    ".cc": ("C++", "#f34b7d"),
+    ".cxx": ("C++", "#f34b7d"),
+    ".cs": ("C#", "#178600"),
+    ".java": ("Java", "#b07219"),
+    ".kt": ("Kotlin", "#A97BFF"),
+    ".kts": ("Kotlin", "#A97BFF"),
+    ".swift": ("Swift", "#F05138"),
+    ".m": ("Objective-C", "#438eff"),
+    ".mm": ("Objective-C++", "#6866fb"),
+    ".scala": ("Scala", "#c22d40"),
+    # Scripting
+    ".rb": ("Ruby", "#701516"),
+    ".php": ("PHP", "#4F5D95"),
+    ".sh": ("Shell", "#89e051"),
+    ".bash": ("Shell", "#89e051"),
+    ".zsh": ("Shell", "#89e051"),
+    ".ps1": ("PowerShell", "#012456"),
+    ".psm1": ("PowerShell", "#012456"),
+    ".lua": ("Lua", "#000080"),
+    ".pl": ("Perl", "#0298c3"),
+    ".r": ("R", "#198CE7"),
+    ".dart": ("Dart", "#00B4AB"),
+    # Data & Config
+    ".sql": ("SQL", "#e38c00"),
+    ".json": ("JSON", "#292929"),
+    ".yaml": ("YAML", "#cb171e"),
+    ".yml": ("YAML", "#cb171e"),
+    ".toml": ("TOML", "#9c4221"),
+    ".xml": ("XML", "#0060ac"),
+    ".md": ("Markdown", "#083fa1"),
+    ".markdown": ("Markdown", "#083fa1"),
+    ".dockerfile": ("Dockerfile", "#384d54"),
+    ".graphql": ("GraphQL", "#e10098"),
+    ".proto": ("Protocol Buffer", "#4f8d6c"),
+}
 
 
 def run_git_command(args: List[str], cwd: str, stdin_data: Optional[str] = None) -> subprocess.CompletedProcess:
@@ -212,6 +284,78 @@ def is_smart_eligible_file(
                 return False
 
     return True
+
+
+def get_folder_group(filepath: str) -> str:
+    """Determine the top-level folder group for a file (VSCodeCounter style)."""
+    norm = filepath.replace("\\", "/").lstrip("./")
+    parts = norm.split("/")
+    if len(parts) == 1:
+        return "(root)"
+    # If the root folder is a container directory like src, lib, app, packages
+    if parts[0] in ("src", "lib", "app", "packages", "pkg") and len(parts) > 2:
+        return f"{parts[0]}/{parts[1]}/"
+    return f"{parts[0]}/"
+
+
+def detect_file_language(filepath: str) -> Tuple[str, str]:
+    """Identify the programming/markup language and its GitHub color."""
+    ext = Path(filepath).suffix.lower()
+    filename = Path(filepath).name.lower()
+    if filename in ("dockerfile", "containerfile"):
+        return ("Dockerfile", "#384d54")
+    if ext in LANGUAGE_MAP:
+        return LANGUAGE_MAP[ext]
+    if ext:
+        lang_name = ext.lstrip(".").upper()
+        return (lang_name, "#8b949e")
+    return ("Other", "#8b949e")
+
+
+def compute_code_breakdowns(
+    file_line_counts: Dict[str, int]
+) -> Tuple[List[FolderStats], List[LanguageStats]]:
+    """Compute folder-level line counts and language distribution."""
+    folder_lines: Dict[str, int] = defaultdict(int)
+    folder_files: Dict[str, int] = defaultdict(int)
+    lang_lines: Dict[str, int] = defaultdict(int)
+    lang_files: Dict[str, int] = defaultdict(int)
+    lang_colors: Dict[str, str] = {}
+
+    for fpath, lcount in file_line_counts.items():
+        fg = get_folder_group(fpath)
+        folder_lines[fg] += lcount
+        folder_files[fg] += 1
+
+        lname, lcolor = detect_file_language(fpath)
+        lang_lines[lname] += lcount
+        lang_files[lname] += 1
+        lang_colors[lname] = lcolor
+
+    folder_stats = [
+        FolderStats(folder_path=fg, lines=folder_lines[fg], files_count=folder_files[fg])
+        for fg in sorted(folder_lines.keys(), key=lambda k: folder_lines[k], reverse=True)
+    ]
+
+    language_stats = [
+        LanguageStats(name=lg, color=lang_colors[lg], lines=lang_lines[lg], files_count=lang_files[lg])
+        for lg in sorted(lang_lines.keys(), key=lambda k: lang_lines[k], reverse=True)
+    ]
+
+    return folder_stats, language_stats
+
+
+def count_file_lines_quick(repo_path: str, filepath: str, branch: str = "HEAD") -> int:
+    """Fast line counting for a file from working tree or git show."""
+    full_path = os.path.join(repo_path, filepath)
+    try:
+        with open(full_path, "rb") as f:
+            return f.read().count(b"\n")
+    except Exception:
+        res = run_git_command(["show", f"{branch}:{filepath}"], cwd=repo_path)
+        if res.returncode == 0:
+            return res.stdout.count("\n")
+        return 0
 
 
 def parse_commit_history(
@@ -413,12 +557,17 @@ def compute_blame_stats(
     respect_gitignore: bool = True,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     max_workers: int = 16
-) -> Tuple[Dict[str, int], int, int]:
-    """Run parallel git blame across tracked files to compute current line ownership."""
+) -> Tuple[Dict[str, int], Dict[str, int], int, int]:
+    """
+    Run parallel git blame across tracked files to compute current line ownership
+    and individual file line counts.
+    Returns:
+        (author_lines, file_line_counts, total_eligible, total_files)
+    """
     all_files = get_tracked_files(repo_path, branch)
     total_files = len(all_files)
     if total_files == 0:
-        return {}, 0, 0
+        return {}, {}, 0, 0
 
     git_ignored = query_git_ignored_files(repo_path, all_files) if respect_gitignore else set()
 
@@ -430,9 +579,10 @@ def compute_blame_stats(
 
     total_eligible = len(eligible_files)
     if total_eligible == 0:
-        return {}, 0, total_files
+        return {}, {}, 0, total_files
 
     author_lines: Dict[str, int] = defaultdict(int)
+    file_lines: Dict[str, int] = {}
     completed_count = 0
 
     workers = min(max_workers, max(1, total_eligible))
@@ -446,6 +596,8 @@ def compute_blame_stats(
             filepath = future_to_file[future]
             try:
                 file_counts = future.result()
+                f_total = sum(file_counts.values())
+                file_lines[filepath] = f_total
                 for author, count in file_counts.items():
                     author_lines[author] += count
             except Exception:
@@ -455,7 +607,7 @@ def compute_blame_stats(
                 if progress_callback:
                     progress_callback(completed_count, total_eligible, filepath)
 
-    return dict(author_lines), total_eligible, total_files
+    return dict(author_lines), file_lines, total_eligible, total_files
 
 
 def analyze_repository(
@@ -510,9 +662,10 @@ def analyze_repository(
     total_current_lines = 0
     blamed_count = 0
     total_files = 0
+    file_lines: Dict[str, int] = {}
 
     if not no_blame:
-        blame_counts, blamed_count, total_files = compute_blame_stats(
+        blame_counts, file_lines, blamed_count, total_files = compute_blame_stats(
             repo_path=repo_path,
             branch=actual_branch,
             by_email=by_email,
@@ -535,6 +688,22 @@ def analyze_repository(
                     current_lines=lines
                 )
                 contributors[author_key] = new_contrib
+    else:
+        # Quick line count without blame
+        all_files = get_tracked_files(repo_path, actual_branch)
+        total_files = len(all_files)
+        git_ignored = query_git_ignored_files(repo_path, all_files) if respect_gitignore else set()
+        eligible_files = [
+            f for f in all_files
+            if not should_ignore_path(f, custom_ignore_patterns, git_ignored)
+            and is_smart_eligible_file(f, allowed_extensions, smart_filter)
+        ]
+        blamed_count = len(eligible_files)
+        for ef in eligible_files:
+            file_lines[ef] = count_file_lines_quick(repo_path, ef, actual_branch)
+        total_current_lines = sum(file_lines.values())
+
+    folder_stats, language_stats = compute_code_breakdowns(file_lines)
 
     return RepoSummary(
         repo_path=root_dir,
@@ -552,6 +721,8 @@ def analyze_repository(
         last_commit_date=last_date,
         contributors=contributors,
         time_series=time_series,
+        folder_stats=folder_stats,
+        language_stats=language_stats,
         blame_skipped=no_blame,
         blamed_files_count=blamed_count,
         total_files_count=total_files

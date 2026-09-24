@@ -181,6 +181,29 @@ class TestGitAnalyzer(unittest.TestCase):
         self.assertEqual(summary_filtered.contributors["DevA"].commits, 1)
         self.assertEqual(summary_filtered.contributors["DevA"].current_lines, 1)
 
+    def test_folder_and_language_breakdowns(self):
+        self._create_and_commit("src/core/main.py", "def run():\n    print('hello')\n", "Alice", "a@test.com", "add py")
+        self._create_and_commit("src/utils/helpers.ts", "export const add = (a: number) => a + 1;\n", "Alice", "a@test.com", "add ts")
+        self._create_and_commit("README.md", "# Hello\nWorld\n", "Alice", "a@test.com", "add md")
+
+        summary = analyze_repository(self.repo_dir)
+
+        # Check languages
+        lang_names = {l.name: l for l in summary.language_stats}
+        self.assertIn("Python", lang_names)
+        self.assertIn("TypeScript", lang_names)
+        self.assertIn("Markdown", lang_names)
+        self.assertEqual(lang_names["Python"].lines, 2)
+        self.assertEqual(lang_names["TypeScript"].lines, 1)
+        self.assertEqual(lang_names["Markdown"].lines, 2)
+
+        # Check folders
+        folder_names = {f.folder_path: f for f in summary.folder_stats}
+        self.assertIn("src/core/", folder_names)
+        self.assertIn("src/utils/", folder_names)
+        self.assertIn("(root)", folder_names)
+
 
 if __name__ == "__main__":
     unittest.main()
+

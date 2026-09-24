@@ -29,8 +29,10 @@ from rich.progress import (
 
 from .cli_formatter import (
     print_contributors_table,
+    print_folder_distribution,
     print_footer_tips,
     print_header,
+    print_language_distribution,
     print_summary_cards,
 )
 from .git_engine import analyze_repository
@@ -64,6 +66,23 @@ def repo_summary_to_dict(summary: RepoSummary) -> Dict[str, Any]:
             "blamed_files_count": summary.blamed_files_count,
             "total_files_count": summary.total_files_count,
         },
+        "folders": [
+            {
+                "folder": f.folder_path,
+                "files_count": f.files_count,
+                "lines": f.lines,
+            }
+            for f in summary.folder_stats
+        ],
+        "languages": [
+            {
+                "name": lang.name,
+                "color": lang.color,
+                "files_count": lang.files_count,
+                "lines": lang.lines,
+            }
+            for lang in summary.language_stats
+        ],
         "contributors": [
             {
                 "name": c.name,
@@ -324,6 +343,8 @@ def main(args=None):
 
     print_header(summary, filter_desc)
     print_summary_cards(summary)
+    print_language_distribution(summary)
+    print_folder_distribution(summary)
 
     top_limit = parsed.top if parsed.top > 0 else None
     print_contributors_table(summary, sort_by=parsed.sort, top_n=top_limit)

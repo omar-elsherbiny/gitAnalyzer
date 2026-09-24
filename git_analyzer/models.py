@@ -40,6 +40,21 @@ class TimeBucketStats:
 
 
 @dataclass
+class FolderStats:
+    folder_path: str
+    lines: int = 0
+    files_count: int = 0
+
+
+@dataclass
+class LanguageStats:
+    name: str
+    color: str
+    lines: int = 0
+    files_count: int = 0
+
+
+@dataclass
 class RepoSummary:
     repo_path: str
     repo_name: str
@@ -59,6 +74,9 @@ class RepoSummary:
 
     contributors: Dict[str, ContributorStats] = field(default_factory=dict)
     time_series: List[TimeBucketStats] = field(default_factory=list)
+
+    folder_stats: List[FolderStats] = field(default_factory=list)
+    language_stats: List[LanguageStats] = field(default_factory=list)
 
     blame_skipped: bool = False
     blamed_files_count: int = 0

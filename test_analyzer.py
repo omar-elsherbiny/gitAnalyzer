@@ -181,6 +181,20 @@ class TestGitAnalyzer(unittest.TestCase):
         self.assertEqual(summary_filtered.contributors["DevA"].commits, 1)
         self.assertEqual(summary_filtered.contributors["DevA"].current_lines, 1)
 
+    def test_ignore_paths_with_spaces_and_unicode(self):
+        # Git quotes paths with spaces or non-ASCII characters by default
+        self._create_and_commit("docs/LLM Analyzable/Report doc.txt", "line1\nline2\n", "DocWriter", "doc@test.com", "add doc with spaces")
+        self._create_and_commit("app.py", "x = 42\n", "CodeWriter", "code@test.com", "add code")
+
+        summary = analyze_repository(
+            self.repo_dir,
+            custom_ignore_patterns=["docs/*"]
+        )
+        self.assertNotIn("DocWriter", summary.contributors)
+        self.assertIn("CodeWriter", summary.contributors)
+        self.assertEqual(summary.total_commits, 1)
+        self.assertEqual(summary.total_current_lines, 1)
+
     def test_folder_and_language_breakdowns(self):
         self._create_and_commit("src/core/main.py", "def run():\n    print('hello')\n", "Alice", "a@test.com", "add py")
         self._create_and_commit("src/utils/helpers.ts", "export const add = (a: number) => a + 1;\n", "Alice", "a@test.com", "add ts")

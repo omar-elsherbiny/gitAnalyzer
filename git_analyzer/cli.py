@@ -245,7 +245,7 @@ def flatten_ignore_patterns(raw_patterns: Optional[List[str]]) -> List[str]:
     result = []
     for item in raw_patterns:
         for sub in item.split(","):
-            cleaned = sub.strip()
+            cleaned = sub.strip().strip('"\'')
             if cleaned:
                 result.append(cleaned)
     return result

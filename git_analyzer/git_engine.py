@@ -116,7 +116,7 @@ LANGUAGE_MAP: Dict[str, Tuple[str, str]] = {
 
 def run_git_command(args: List[str], cwd: str, stdin_data: Optional[str] = None) -> subprocess.CompletedProcess:
     """Run a git command in the specified directory safely with utf-8 decoding."""
-    cmd = ["git", "-C", str(cwd)] + args
+    cmd = ["git", "-C", str(cwd), "-c", "core.quotepath=false"] + args
     return subprocess.run(
         cmd,
         input=stdin_data,
@@ -125,6 +125,22 @@ def run_git_command(args: List[str], cwd: str, stdin_data: Optional[str] = None)
         encoding="utf-8",
         errors="replace"
     )
+
+
+def clean_git_path(filepath: str) -> str:
+    """Normalize and unquote a git file path, decoding any octal escapes."""
+    p = filepath.strip()
+    if (p.startswith('"') and p.endswith('"')) or (p.startswith("'") and p.endswith("'")):
+        p = p[1:-1]
+        try:
+            p = p.encode("latin1").decode("unicode_escape").encode("latin1").decode("utf-8")
+        except Exception:
+            pass
+    p = p.strip('"\'')
+    p = p.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p.strip("/")
 
 
 def check_git_installed() -> bool:
@@ -203,7 +219,7 @@ def get_tracked_files(repo_path: str, branch: str = "HEAD") -> List[str]:
         res = run_git_command(["ls-files"], cwd=repo_path)
         if res.returncode != 0:
             return []
-    files = [f.strip() for f in res.stdout.splitlines() if f.strip()]
+    files = [clean_git_path(f) for f in res.stdout.splitlines() if f.strip()]
     return files
 
 
@@ -212,7 +228,7 @@ def query_git_ignored_files(repo_path: str, filepaths: Iterable[str]) -> Set[str
     Query Git's native engine to check which filepaths match .gitignore rules.
     Uses git check-ignore --no-index -z --stdin for batch testing.
     """
-    paths_list = [p.replace("\\", "/").lstrip("./") for p in filepaths if p]
+    paths_list = [clean_git_path(p) for p in filepaths if p]
     if not paths_list:
         return set()
 
@@ -224,7 +240,7 @@ def query_git_ignored_files(repo_path: str, filepaths: Iterable[str]) -> Set[str
     )
 
     if res.stdout:
-        return set(x for x in res.stdout.split("\0") if x)
+        return set(clean_git_path(x) for x in res.stdout.split("\0") if x)
     return set()
 
 
@@ -234,24 +250,46 @@ def should_ignore_path(
     ignored_by_git: Optional[Set[str]] = None
 ) -> bool:
     """Determine if a file path should be ignored based on .gitignore or custom patterns."""
-    norm_path = filepath.replace("\\", "/").lstrip("./")
-    filename = Path(filepath).name
+    norm_path = clean_git_path(filepath)
+    if not norm_path:
+        return False
+
+    filename = Path(norm_path).name
 
     if ignored_by_git and norm_path in ignored_by_git:
         return True
 
     if custom_patterns:
         for raw_pattern in custom_patterns:
-            pat = raw_pattern.replace("\\", "/").strip().lstrip("./")
+            pat = raw_pattern.replace("\\", "/").strip().strip('"\'').lstrip("./")
             if not pat:
                 continue
 
-            dir_pat = pat.rstrip("/")
-            if norm_path == dir_pat or norm_path.startswith(dir_pat + "/"):
+            # Exact match on full path or filename
+            if norm_path == pat or filename == pat:
                 return True
 
+            # Directory pattern matching (e.g. "docs/*", "docs/", or "docs")
+            if pat.endswith("/*"):
+                dir_pat = pat[:-2].rstrip("/")
+                if norm_path == dir_pat or norm_path.startswith(dir_pat + "/"):
+                    return True
+            elif pat.endswith("/"):
+                dir_pat = pat.rstrip("/")
+                if norm_path == dir_pat or norm_path.startswith(dir_pat + "/"):
+                    return True
+            elif not any(c in pat for c in "*?[]"):
+                if norm_path == pat or norm_path.startswith(pat + "/"):
+                    return True
+
+            # Glob pattern match
             if fnmatch.fnmatch(norm_path, pat) or fnmatch.fnmatch(filename, pat):
                 return True
+
+            # Match sub-folder wildcard pattern (e.g. "test/*.py" matching "foo/test/bar.py")
+            if not pat.startswith("*") and not pat.startswith("/"):
+                if fnmatch.fnmatch(norm_path, f"*/{pat}"):
+                    return True
 
     return False
 
@@ -262,8 +300,8 @@ def is_smart_eligible_file(
     smart_filter: bool = True
 ) -> bool:
     """Check if file should be blamed based on smart filtering or extension constraints."""
-    norm_path = filepath.replace("\\", "/").lstrip("./")
-    ext = Path(filepath).suffix.lower()
+    norm_path = clean_git_path(filepath)
+    ext = Path(norm_path).suffix.lower()
 
     if allowed_extensions is not None:
         return ext in allowed_extensions
@@ -274,7 +312,7 @@ def is_smart_eligible_file(
     if ext in IGNORED_EXTENSIONS:
         return False
 
-    filename = Path(filepath).name
+    filename = Path(norm_path).name
     for pattern in IGNORED_PATTERNS:
         if "/" in pattern:
             if fnmatch.fnmatch(norm_path, pattern):
@@ -288,9 +326,9 @@ def is_smart_eligible_file(
 
 def get_folder_group(filepath: str) -> str:
     """Determine the top-level folder group for a file (VSCodeCounter style)."""
-    norm = filepath.replace("\\", "/").lstrip("./")
+    norm = clean_git_path(filepath)
     parts = norm.split("/")
-    if len(parts) == 1:
+    if len(parts) <= 1:
         return "(root)"
     # If the root folder is a container directory like src, lib, app, packages
     if parts[0] in ("src", "lib", "app", "packages", "pkg") and len(parts) > 2:
@@ -300,8 +338,9 @@ def get_folder_group(filepath: str) -> str:
 
 def detect_file_language(filepath: str) -> Tuple[str, str]:
     """Identify the programming/markup language and its GitHub color."""
-    ext = Path(filepath).suffix.lower()
-    filename = Path(filepath).name.lower()
+    norm = clean_git_path(filepath)
+    ext = Path(norm).suffix.lower()
+    filename = Path(norm).name.lower()
     if filename in ("dockerfile", "containerfile"):
         return ("Dockerfile", "#384d54")
     if ext in LANGUAGE_MAP:
@@ -347,12 +386,13 @@ def compute_code_breakdowns(
 
 def count_file_lines_quick(repo_path: str, filepath: str, branch: str = "HEAD") -> int:
     """Fast line counting for a file from working tree or git show."""
-    full_path = os.path.join(repo_path, filepath)
+    norm = clean_git_path(filepath)
+    full_path = os.path.join(repo_path, norm)
     try:
         with open(full_path, "rb") as f:
             return f.read().count(b"\n")
     except Exception:
-        res = run_git_command(["show", f"{branch}:{filepath}"], cwd=repo_path)
+        res = run_git_command(["show", f"{branch}:{norm}"], cwd=repo_path)
         if res.returncode == 0:
             return res.stdout.count("\n")
         return 0
@@ -431,6 +471,7 @@ def parse_commit_history(
                     else:
                         filepath = filepath.split(" => ")[-1]
 
+                filepath = clean_git_path(filepath)
                 current_commit["files"].append((add_str, del_str, filepath))
                 all_touched_files.add(filepath)
 
@@ -524,8 +565,9 @@ def _blame_single_file(
     by_email: bool = False
 ) -> Dict[str, int]:
     """Blame a single file and return mapping of author_key -> line count."""
+    norm = clean_git_path(filepath)
     res = run_git_command(
-        ["blame", "--line-porcelain", branch, "--", filepath],
+        ["blame", "--line-porcelain", branch, "--", norm],
         cwd=repo_path
     )
     if res.returncode != 0:

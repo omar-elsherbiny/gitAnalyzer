@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gitanalyzer"
+version = "0.1.0"
+description = "CLI tool for Git repository contribution insights, line churn, and code ownership analysis"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "rich>=13.0.0",
+    "matplotlib>=3.7.0"
+]
+
+[project.scripts]
+gitanalyzer = "git_analyzer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["git_analyzer*"]
+

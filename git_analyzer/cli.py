@@ -112,7 +112,6 @@ QUICK CHEATSHEET & COMMON EXAMPLES:
         """
     )
 
-    # Positional
     parser.add_argument(
         "repo_path",
         nargs="?",
@@ -120,7 +119,6 @@ QUICK CHEATSHEET & COMMON EXAMPLES:
         help="Path to Git repository directory (default: current directory '.')"
     )
 
-    # Group 1: Repository & Revision Scope
     group_repo = parser.add_argument_group("Repository & Revision Scope")
     group_repo.add_argument(
         "-b", "--branch",
@@ -141,7 +139,6 @@ QUICK CHEATSHEET & COMMON EXAMPLES:
         help="Include commits before date or ref (e.g. '2024-12-31')"
     )
 
-    # Group 2: File Filtering & Exclusions
     group_filter = parser.add_argument_group("File Filtering & Exclusions")
     group_filter.add_argument(
         "-i", "--ignore", "--exclude",
@@ -174,7 +171,6 @@ QUICK CHEATSHEET & COMMON EXAMPLES:
         help="Skip git blame ownership analysis entirely (instant execution on huge repos)"
     )
 
-    # Group 3: Contributor Display
     group_contrib = parser.add_argument_group("Contributor Display")
     group_contrib.add_argument(
         "--sort",
@@ -195,7 +191,6 @@ QUICK CHEATSHEET & COMMON EXAMPLES:
         help="Identify and group contributors by author email instead of name"
     )
 
-    # Group 4: Output & Visualization
     group_output = parser.add_argument_group("Output & Visualization")
     group_output.add_argument(
         "-p", "--plot",
@@ -247,7 +242,6 @@ def main(args=None):
     ignore_patterns = flatten_ignore_patterns(parsed.ignore)
     respect_gitignore = not parsed.no_gitignore
 
-    # Progress bar setup for blame
     progress = None
     task_id = None
 
@@ -307,13 +301,11 @@ def main(args=None):
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
-    # JSON output mode
     if parsed.json:
         data = repo_summary_to_dict(summary)
         print(json.dumps(data, indent=2))
         return
 
-    # Rich Terminal Output mode
     filter_parts = []
     if parsed.branch:
         filter_parts.append(f"branch={parsed.branch}")
@@ -337,14 +329,13 @@ def main(args=None):
     print_contributors_table(summary, sort_by=parsed.sort, top_n=top_limit)
     print_footer_tips(plot_requested=parsed.plot or bool(parsed.save_plot))
 
-    # Matplotlib Graph handling
     if parsed.plot or parsed.save_plot:
         try:
             plot_contributions(
                 summary,
                 save_path=parsed.save_plot,
                 show_window=parsed.plot,
-                top_n=top_limit if top_limit and top_limit < 10 else 8
+                top_n=top_limit if top_limit and 1 <= top_limit <= 5 else 3
             )
         except Exception as e:
             console.print(f"[bold red]Visualization error:[/bold red] {e}")

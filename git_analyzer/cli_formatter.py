@@ -73,7 +73,6 @@ def print_summary_cards(summary: RepoSummary):
     table.add_column(justify="center", ratio=1)
     table.add_column(justify="center", ratio=1)
 
-    # Card 1: Commits
     p1 = Panel(
         f"[bold cyan]{format_number(summary.total_commits)}[/bold cyan]\n[dim]across {len(summary.contributors)} contributors[/dim]",
         title="[bold]Total Commits[/bold]",
@@ -81,7 +80,6 @@ def print_summary_cards(summary: RepoSummary):
         padding=(0, 1)
     )
 
-    # Card 2: Additions / Deletions
     net_color = "green" if summary.total_net_lines >= 0 else "red"
     net_sign = "+" if summary.total_net_lines >= 0 else ""
     p2 = Panel(
@@ -91,7 +89,6 @@ def print_summary_cards(summary: RepoSummary):
         padding=(0, 1)
     )
 
-    # Card 3: Surviving Lines in HEAD
     if summary.blame_skipped:
         p3_content = "[yellow]N/A[/yellow]\n[dim](blame skipped)[/dim]"
     else:
@@ -104,7 +101,6 @@ def print_summary_cards(summary: RepoSummary):
         padding=(0, 1)
     )
 
-    # Card 4: Most Active Contributor
     if summary.contributors:
         top_committer = max(summary.contributors.values(), key=lambda c: c.commits)
         p4_content = f"[bold white]{top_committer.name[:16]}[/bold white]\n[dim]{format_number(top_committer.commits)} commits[/dim]"
@@ -136,7 +132,6 @@ def print_contributors_table(
         console.print("[yellow]No contributors found for the specified filters.[/yellow]")
         return
 
-    # Sort contributors
     sort_keys = {
         "commits": lambda c: c.commits,
         "additions": lambda c: c.additions,
@@ -172,22 +167,18 @@ def print_contributors_table(
     total_l = max(1, summary.total_current_lines)
 
     for idx, c in enumerate(displayed_contribs, start=1):
-        # Commits bar
         c_pct = (c.commits / total_c) * 100
         c_bar = render_mini_bar(c.commits / total_c, width=8)
         commits_cell = f"{format_number(c.commits)} [dim]({c_pct:4.1f}%)[/dim] [blue]{c_bar}[/blue]"
 
-        # Additions & Deletions
         adds_cell = f"+{format_number(c.additions)}"
         dels_cell = f"-{format_number(c.deletions)}"
 
-        # Net
         net_val = c.net_lines
         net_sign = "+" if net_val >= 0 else ""
         net_color = "green" if net_val >= 0 else "red"
         net_cell = f"[{net_color}]{net_sign}{format_number(net_val)}[/{net_color}]"
 
-        # Current surviving lines (HEAD blame)
         if summary.blame_skipped:
             curr_lines_cell = "[dim]N/A[/dim]"
         else:
@@ -195,12 +186,10 @@ def print_contributors_table(
             l_bar = render_mini_bar((c.current_lines / total_l) if summary.total_current_lines > 0 else 0.0, width=8)
             curr_lines_cell = f"{format_number(c.current_lines)} [dim]({l_pct:4.1f}%)[/dim] [magenta]{l_bar}[/magenta]"
 
-        # Contributor identity
         name_cell = f"[bold]{c.name}[/bold]"
         if c.email:
             name_cell += f"\n[dim]{c.email}[/dim]"
 
-        # Active period
         if c.first_commit_date and c.last_commit_date:
             span = f"{c.first_commit_date.strftime('%Y/%m')} - {c.last_commit_date.strftime('%Y/%m')}"
         else:
@@ -235,6 +224,7 @@ def print_footer_tips(plot_requested: bool):
         tips.append("Pass [bold cyan]--save-plot <file.png>[/bold cyan] to export chart without opening a window.")
 
     tips.append("Use [bold]--sort <commits|additions|deletions|lines|net>[/bold] to reorder the contributor table.")
+    tips.append("Use [bold]-i 'tests/*' 'docs/*'[/bold] to skip files or directories from analysis.")
     tips.append("Use [bold]--no-blame[/bold] for instant analysis on massive codebases.")
 
     tip_text = "\n".join(f"• {t}" for t in tips)

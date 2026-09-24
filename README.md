@@ -12,8 +12,8 @@ GitAnalyzer inspects any local Git repository folder and provides a breakdown of
 - **Contributor Distribution**: Visual percentage bars and commit counts for each contributor.
 - **Lines of Code Churn (+x / -y)**: Lines added, lines deleted, and net change per contributor.
 - **Current Code Ownership (HEAD)**: Surviving lines of code in the latest commit attributable to each author using parallelized `git blame`.
-- **Smart Filtering**: Automatically filters out binaries and generated/vendor lockfiles (e.g. `package-lock.json`, minified JavaScript, source maps).
-- **GitHub-Styled Activity Chart**: Interactive Matplotlib visualization showing weekly line changes (+/-) and commit volume over time, plus ownership rankings.
+- **Smart & .gitignore Filtering**: Automatically honors `.gitignore` rules and filters out binaries and vendor lockfiles (e.g. `package-lock.json`, minified JavaScript).
+- **Per-Contributor Timeline Charts**: Interactive Matplotlib visualization showing overall activity over time as well as individual contribution timelines for top contributors.
 - **Flexible Sorting & Exporting**: Sort by commits, additions, deletions, lines owned, net change, or export everything to JSON.
 
 ---
@@ -115,4 +115,3 @@ To use `gitanalyzer` from any terminal or PowerShell window:
 | `--workers N` | `-w` | Number of worker threads for parallel blame (default: 16) |
 | `--json` | | Output report as structured JSON |
 | `--help` | `-h` | Show intuitive help guide with cheatsheet and exit |
-

@@ -1,10 +1,11 @@
 """
 Matplotlib visualizer for Git contribution statistics.
-Mimics GitHub's contribution activity graphs with modern styling.
+Renders GitHub-style activity bar charts across time for the whole repository
+and per top contributor.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -27,7 +28,7 @@ def apply_github_dark_theme(fig, axes):
         if ax is None:
             continue
         ax.set_facecolor(card_color)
-        ax.tick_params(colors=subtext_color, labelsize=9)
+        ax.tick_params(colors=subtext_color, labelsize=8)
         ax.xaxis.label.set_color(text_color)
         ax.yaxis.label.set_color(text_color)
         ax.title.set_color(text_color)
@@ -43,191 +44,211 @@ def plot_contributions(
     summary: RepoSummary,
     save_path: Optional[str] = None,
     show_window: bool = True,
-    top_n: int = 8
+    top_n: int = 3
 ) -> None:
     """
-    Render a GitHub-style multi-panel visualization of repository activity and contributors.
+    Render GitHub-style timeline visualization:
+    - Top panel: Overall repository activity over time (lines added/deleted + commits).
+    - Bottom panels: Individual activity timeline bar charts for each top contributor.
     """
-    if not summary.time_series and not summary.contributors:
+    if not summary.time_series or not summary.contributors:
         print("[!] No commit data available to visualize.")
         return
 
-    # Create figure with 2 rows: Top = Timeline, Bottom = Contributor breakdowns
-    fig = plt.figure(figsize=(13, 8), dpi=100)
-    fig.canvas.manager.set_window_title(f"GitAnalyzer - {summary.repo_name} Contributions")
+    # Extract dates and time series
+    dates = [datetime.fromtimestamp(pt.timestamp) for pt in summary.time_series]
+    num_dates = mdates.date2num(dates)
+    bar_width = (
+        max(1.0, (num_dates[-1] - num_dates[0]) / max(len(num_dates), 1) * 0.7)
+        if len(num_dates) > 1
+        else 3.0
+    )
 
-    # Grid layout: Row 1 = Timeline (full width), Row 2 = (Left: Ownership, Right: Commits)
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.2, 1.0], hspace=0.35, wspace=0.25)
-    ax_timeline = fig.add_subplot(gs[0, :])
-    ax_ownership = fig.add_subplot(gs[1, 0])
-    ax_commits = fig.add_subplot(gs[1, 1])
-
-    # -------------------------------------------------------------
-    # Panel 1: Activity Over Time (GitHub additions/deletions + commits)
-    # -------------------------------------------------------------
-    if summary.time_series:
-        dates = [datetime.fromtimestamp(pt.timestamp) for pt in summary.time_series]
-        additions = np.array([pt.additions for pt in summary.time_series])
-        deletions = np.array([pt.deletions for pt in summary.time_series])
-        commits = [pt.commits for pt in summary.time_series]
-
-        # Convert dates to matplotlib format
-        num_dates = mdates.date2num(dates)
-        bar_width = max(1.0, (num_dates[-1] - num_dates[0]) / max(len(num_dates), 1) * 0.7) if len(num_dates) > 1 else 3.0
-
-        # Green additions (+), Red deletions (-)
-        ax_timeline.bar(
-            dates,
-            additions,
-            width=bar_width,
-            color="#2ea043",
-            alpha=0.85,
-            label="Lines Added (+)"
-        )
-        ax_timeline.bar(
-            dates,
-            -deletions,
-            width=bar_width,
-            color="#da3633",
-            alpha=0.85,
-            label="Lines Deleted (-)"
-        )
-
-        # Format timeline axes
-        max_add = max(additions) if len(additions) > 0 else 0
-        max_del = max(deletions) if len(deletions) > 0 else 0
-        y_top = max(max_add * 1.2, 5)
-        y_bot = -max(max_del * 1.2, 5) if max_del > 0 else -1
-        ax_timeline.set_ylim(bottom=y_bot, top=y_top)
-
-        # Twin axis for commit frequency line
-        ax_commits_line = ax_timeline.twinx()
-        ax_commits_line.plot(
-            dates,
-            commits,
-            color="#58a6ff",
-            linewidth=2.0,
-            marker="o",
-            markersize=4.0,
-            label="Commits"
-        )
-        ax_commits_line.set_ylim(bottom=0, top=max(max(commits) * 1.3, 5) if commits else 5)
-        ax_commits_line.set_ylabel("Commits / Week", color="#58a6ff", fontsize=10, weight="bold")
-        ax_commits_line.tick_params(colors="#58a6ff", labelsize=9)
-        ax_commits_line.spines["right"].set_color("#58a6ff")
-        ax_commits_line.spines["top"].set_visible(False)
-        ax_commits_line.spines["left"].set_visible(False)
-        ax_commits_line.spines["bottom"].set_visible(False)
-
-        # Format timeline X-axis
-        ax_timeline.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-        ax_timeline.set_ylabel("Lines Changed (+ / -)", color="#e6edf3", fontsize=10, weight="bold")
-        ax_timeline.set_title(
-            f"Repository Activity Over Time ({summary.repo_name})",
-            fontsize=12,
-            weight="bold",
-            pad=10
-        )
-        ax_timeline.axhline(0, color="#8b949e", linewidth=0.8, linestyle="-")
-
-        # Combine legends
-        lines1, labels1 = ax_timeline.get_legend_handles_labels()
-        lines2, labels2 = ax_commits_line.get_legend_handles_labels()
-        ax_timeline.legend(
-            lines1 + lines2,
-            labels1 + labels2,
-            loc="upper left",
-            frameon=True,
-            facecolor="#161b22",
-            edgecolor="#30363d",
-            labelcolor="#e6edf3",
-            fontsize=9
-        )
-    else:
-        ax_timeline.text(0.5, 0.5, "No time-series data", ha="center", va="center", color="#8b949e")
-
-    # -------------------------------------------------------------
-    # Panel 2: Current Code Ownership (Lines in latest commit)
-    # -------------------------------------------------------------
-    # Sort contributors by current lines
-    contribs_by_lines = sorted(
-        summary.contributors.values(),
-        key=lambda c: c.current_lines,
-        reverse=True
-    )[:top_n]
-
-    if contribs_by_lines and sum(c.current_lines for c in contribs_by_lines) > 0:
-        names = [c.name[:18] + ("…" if len(c.name) > 18 else "") for c in reversed(contribs_by_lines)]
-        lines = [c.current_lines for c in reversed(contribs_by_lines)]
-        total_curr = max(summary.total_current_lines, 1)
-
-        bars = ax_ownership.barh(names, lines, color="#bc8cff", alpha=0.85, height=0.6)
-        ax_ownership.set_xlabel("Surviving Lines of Code", fontsize=9, weight="bold")
-        ax_ownership.set_title("Current Code Ownership (HEAD)", fontsize=11, weight="bold")
-
-        # Annotate percentages
-        for bar in bars:
-            val = bar.get_width()
-            pct = (val / total_curr) * 100
-            ax_ownership.text(
-                val + (max(lines) * 0.02),
-                bar.get_y() + bar.get_height() / 2,
-                f"{val:,} ({pct:.1f}%)",
-                va="center",
-                ha="left",
-                color="#e6edf3",
-                fontsize=8
-            )
-        ax_ownership.set_xlim(0, max(lines) * 1.25 if lines else 1)
-    else:
-        status_msg = "Blame skipped (--no-blame)" if summary.blame_skipped else "No surviving lines tracked"
-        ax_ownership.text(0.5, 0.5, status_msg, ha="center", va="center", color="#8b949e")
-        ax_ownership.set_title("Current Code Ownership (HEAD)", fontsize=11, weight="bold")
-
-    # -------------------------------------------------------------
-    # Panel 3: Commits Distribution by Contributor
-    # -------------------------------------------------------------
-    contribs_by_commits = sorted(
+    # Sort contributors by total commits
+    sorted_contribs = sorted(
         summary.contributors.values(),
         key=lambda c: c.commits,
         reverse=True
-    )[:top_n]
-
-    if contribs_by_commits:
-        c_names = [c.name[:18] + ("…" if len(c.name) > 18 else "") for c in reversed(contribs_by_commits)]
-        c_counts = [c.commits for c in reversed(contribs_by_commits)]
-        total_c = max(summary.total_commits, 1)
-
-        bars2 = ax_commits.barh(c_names, c_counts, color="#388bfd", alpha=0.85, height=0.6)
-        ax_commits.set_xlabel("Commits Count", fontsize=9, weight="bold")
-        ax_commits.set_title("Top Contributors by Commits", fontsize=11, weight="bold")
-
-        for bar in bars2:
-            val = bar.get_width()
-            pct = (val / total_c) * 100
-            ax_commits.text(
-                val + (max(c_counts) * 0.02),
-                bar.get_y() + bar.get_height() / 2,
-                f"{val:,} ({pct:.1f}%)",
-                va="center",
-                ha="left",
-                color="#e6edf3",
-                fontsize=8
-            )
-        ax_commits.set_xlim(0, max(c_counts) * 1.25 if c_counts else 1)
-
-    # Apply GitHub dark styling
-    apply_github_dark_theme(fig, [ax_timeline, ax_ownership, ax_commits])
-
-    # Footer note
-    fig.text(
-        0.5,
-        0.015,
-        f"Generated by GitAnalyzer • Branch: {summary.current_branch} • Total Commits: {summary.total_commits:,}",
-        ha="center",
-        fontsize=8,
-        color="#8b949e"
     )
+    selected_contribs = sorted_contribs[:top_n]
+    num_subcharts = 1 + len(selected_contribs)
+
+    # Dynamic figure height based on number of subplots
+    fig_height = max(6.0, 3.2 + (num_subcharts * 1.8))
+    fig, axes = plt.subplots(
+        nrows=num_subcharts,
+        ncols=1,
+        figsize=(13, fig_height),
+        sharex=True,
+        dpi=100,
+        gridspec_kw={"height_ratios": [1.4] + [1.0] * len(selected_contribs), "hspace": 0.3}
+    )
+    if num_subcharts == 1:
+        axes = [axes]
+
+    fig.canvas.manager.set_window_title(f"GitAnalyzer - {summary.repo_name} Contributor Timelines")
+
+    all_axes_to_theme = list(axes)
+
+    # -------------------------------------------------------------
+    # Panel 0: Overall Repository Activity Over Time
+    # -------------------------------------------------------------
+    ax_main = axes[0]
+    additions = np.array([pt.additions for pt in summary.time_series])
+    deletions = np.array([pt.deletions for pt in summary.time_series])
+    commits = [pt.commits for pt in summary.time_series]
+
+    ax_main.bar(
+        dates,
+        additions,
+        width=bar_width,
+        color="#2ea043",
+        alpha=0.85,
+        label="Lines Added (+)"
+    )
+    ax_main.bar(
+        dates,
+        -deletions,
+        width=bar_width,
+        color="#da3633",
+        alpha=0.85,
+        label="Lines Deleted (-)"
+    )
+
+    max_add = max(additions) if len(additions) > 0 else 0
+    max_del = max(deletions) if len(deletions) > 0 else 0
+    y_top = max(max_add * 1.25, 5)
+    y_bot = -max(max_del * 1.25, 5) if max_del > 0 else -1
+    ax_main.set_ylim(bottom=y_bot, top=y_top)
+    ax_main.axhline(0, color="#8b949e", linewidth=0.8, linestyle="-")
+    ax_main.set_ylabel("Lines Changed (+/-)", fontsize=9, weight="bold")
+    ax_main.set_title(
+        f"Overall Repository Activity Over Time • {summary.repo_name} (Branch: {summary.current_branch})",
+        fontsize=11,
+        weight="bold",
+        pad=8
+    )
+
+    # Secondary axis for commit volume
+    ax_main_commits = ax_main.twinx()
+    all_axes_to_theme.append(ax_main_commits)
+    ax_main_commits.plot(
+        dates,
+        commits,
+        color="#58a6ff",
+        linewidth=2.0,
+        marker="o",
+        markersize=4.0,
+        label="Commits"
+    )
+    ax_main_commits.set_ylim(bottom=0, top=max(max(commits) * 1.3, 5) if commits else 5)
+    ax_main_commits.set_ylabel("Commits / Week", color="#58a6ff", fontsize=9, weight="bold")
+    ax_main_commits.tick_params(colors="#58a6ff", labelsize=8)
+    ax_main_commits.spines["right"].set_color("#58a6ff")
+    ax_main_commits.spines["top"].set_visible(False)
+    ax_main_commits.spines["left"].set_visible(False)
+    ax_main_commits.spines["bottom"].set_visible(False)
+
+    # Combined legend for top plot
+    lines1, labels1 = ax_main.get_legend_handles_labels()
+    lines2, labels2 = ax_main_commits.get_legend_handles_labels()
+    ax_main.legend(
+        lines1 + lines2,
+        labels1 + labels2,
+        loc="upper left",
+        frameon=True,
+        facecolor="#161b22",
+        edgecolor="#30363d",
+        labelcolor="#e6edf3",
+        fontsize=8
+    )
+
+    # -------------------------------------------------------------
+    # Panels 1..N: Contributor Timelines
+    # -------------------------------------------------------------
+    for idx, contrib in enumerate(selected_contribs, start=1):
+        ax = axes[idx]
+        author_key = contrib.email.lower() if contrib.email in summary.contributors else contrib.name
+
+        c_adds = np.array([
+            pt.author_additions.get(author_key, 0)
+            or pt.author_additions.get(contrib.name, 0)
+            for pt in summary.time_series
+        ])
+        c_dels = np.array([
+            pt.author_deletions.get(author_key, 0)
+            or pt.author_deletions.get(contrib.name, 0)
+            for pt in summary.time_series
+        ])
+        c_commits = [
+            pt.author_commits.get(author_key, 0)
+            or pt.author_commits.get(contrib.name, 0)
+            for pt in summary.time_series
+        ]
+
+        ax.bar(
+            dates,
+            c_adds,
+            width=bar_width,
+            color="#2ea043",
+            alpha=0.85
+        )
+        ax.bar(
+            dates,
+            -c_dels,
+            width=bar_width,
+            color="#da3633",
+            alpha=0.85
+        )
+
+        c_max_add = max(c_adds) if len(c_adds) > 0 else 0
+        c_max_del = max(c_dels) if len(c_dels) > 0 else 0
+        cy_top = max(c_max_add * 1.25, 4)
+        cy_bot = -max(c_max_del * 1.25, 4) if c_max_del > 0 else -1
+        ax.set_ylim(bottom=cy_bot, top=cy_top)
+        ax.axhline(0, color="#8b949e", linewidth=0.8, linestyle="-")
+        ax.set_ylabel("Lines (+/-)", fontsize=8)
+
+        # Contributor commit line on twin axis
+        ax_c_line = ax.twinx()
+        all_axes_to_theme.append(ax_c_line)
+        ax_c_line.plot(
+            dates,
+            c_commits,
+            color="#58a6ff",
+            linewidth=1.8,
+            marker="o",
+            markersize=3.5
+        )
+        c_max_comm = max(c_commits) if len(c_commits) > 0 else 1
+        ax_c_line.set_ylim(bottom=0, top=max(c_max_comm * 1.3, 4))
+        ax_c_line.set_ylabel("Commits", color="#58a6ff", fontsize=8)
+        ax_c_line.tick_params(colors="#58a6ff", labelsize=8)
+        ax_c_line.spines["right"].set_color("#58a6ff")
+        ax_c_line.spines["top"].set_visible(False)
+        ax_c_line.spines["left"].set_visible(False)
+        ax_c_line.spines["bottom"].set_visible(False)
+
+        # Title with rank, name, and total contribution summary
+        email_str = f" <{contrib.email}>" if contrib.email else ""
+        ax.set_title(
+            f"#{idx} {contrib.name}{email_str}   •   {contrib.commits:,} commits   (+{contrib.additions:,} / -{contrib.deletions:,})",
+            fontsize=9.5,
+            weight="bold",
+            color="#e6edf3",
+            pad=6,
+            loc="left"
+        )
+
+    # Format shared X-axis on the bottom subplot
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    axes[-1].set_xlabel("Timeline", fontsize=9, weight="bold", color="#e6edf3")
+
+    # Apply GitHub Dark theme
+    apply_github_dark_theme(fig, all_axes_to_theme)
+
+    # Adjust layout cleanly without twinx warnings
+    fig.subplots_adjust(top=0.94, bottom=0.08, left=0.08, right=0.92, hspace=0.38)
 
     if save_path:
         plt.savefig(save_path, bbox_inches="tight", facecolor=fig.get_facecolor(), dpi=150)

@@ -1,5 +1,6 @@
 """
 Git engine module for querying and analyzing Git repositories.
+Handles commit parsing, line churn, code ownership (blame), and .gitignore/pattern filtering.
 """
 
 from collections import defaultdict
@@ -9,7 +10,7 @@ import fnmatch
 import os
 from pathlib import Path
 import subprocess
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from .models import ContributorStats, RepoSummary, TimeBucketStats
 
@@ -26,7 +27,7 @@ IGNORED_EXTENSIONS = {
     ".woff", ".woff2", ".ttf", ".eot", ".otf",
     # Data / DB / ML models
     ".db", ".sqlite", ".sqlite3", ".parquet", ".pkl", ".pickle",
-    ".onnx", ".pt", ".pth", ".h5", ".bin", ".weights"
+    ".onnx", ".pt", ".pth", ".h5", ".weights"
 }
 
 # Common lockfiles, minified files, and generated folders to ignore in smart mode
@@ -43,11 +44,12 @@ IGNORED_PATTERNS = [
 ]
 
 
-def run_git_command(args: List[str], cwd: str) -> subprocess.CompletedProcess:
+def run_git_command(args: List[str], cwd: str, stdin_data: Optional[str] = None) -> subprocess.CompletedProcess:
     """Run a git command in the specified directory safely with utf-8 decoding."""
     cmd = ["git", "-C", str(cwd)] + args
     return subprocess.run(
         cmd,
+        input=stdin_data,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -137,13 +139,70 @@ def get_tracked_files(repo_path: str, branch: str = "HEAD") -> List[str]:
     return files
 
 
+def query_git_ignored_files(repo_path: str, filepaths: Iterable[str]) -> Set[str]:
+    """
+    Query Git's native engine to check which filepaths match .gitignore rules.
+    Uses git check-ignore --no-index -z --stdin for batch testing.
+    """
+    paths_list = [p.replace("\\", "/").lstrip("./") for p in filepaths if p]
+    if not paths_list:
+        return set()
+
+    stdin_payload = "\0".join(paths_list) + "\0"
+    res = run_git_command(
+        ["check-ignore", "--no-index", "-z", "--stdin"],
+        cwd=repo_path,
+        stdin_data=stdin_payload
+    )
+
+    if res.stdout:
+        return set(x for x in res.stdout.split("\0") if x)
+    return set()
+
+
+def should_ignore_path(
+    filepath: str,
+    custom_patterns: Optional[List[str]] = None,
+    ignored_by_git: Optional[Set[str]] = None
+) -> bool:
+    """
+    Determine if a file path should be ignored based on:
+    1. .gitignore rules
+    2. User-specified custom ignore patterns (--ignore / --exclude)
+    """
+    norm_path = filepath.replace("\\", "/").lstrip("./")
+    filename = Path(filepath).name
+
+    # 1. Match against .gitignore
+    if ignored_by_git and norm_path in ignored_by_git:
+        return True
+
+    # 2. Match against custom user patterns
+    if custom_patterns:
+        for raw_pattern in custom_patterns:
+            pat = raw_pattern.replace("\\", "/").strip().lstrip("./")
+            if not pat:
+                continue
+
+            # Strip trailing slash for directory comparison
+            dir_pat = pat.rstrip("/")
+            if norm_path == dir_pat or norm_path.startswith(dir_pat + "/"):
+                return True
+
+            # Match wildcard on full relative path or filename
+            if fnmatch.fnmatch(norm_path, pat) or fnmatch.fnmatch(filename, pat):
+                return True
+
+    return False
+
+
 def is_smart_eligible_file(
     filepath: str,
     allowed_extensions: Optional[Set[str]] = None,
     smart_filter: bool = True
 ) -> bool:
     """Check if file should be blamed based on smart filtering or extension constraints."""
-    norm_path = filepath.replace("\\", "/")
+    norm_path = filepath.replace("\\", "/").lstrip("./")
     ext = Path(filepath).suffix.lower()
 
     if allowed_extensions is not None:
@@ -156,7 +215,7 @@ def is_smart_eligible_file(
     if ext in IGNORED_EXTENSIONS:
         return False
 
-    # Check against ignored patterns
+    # Check against smart ignored patterns
     filename = Path(filepath).name
     for pattern in IGNORED_PATTERNS:
         if "/" in pattern:
@@ -174,16 +233,13 @@ def parse_commit_history(
     branch: str = "HEAD",
     since: Optional[str] = None,
     until: Optional[str] = None,
-    by_email: bool = False
+    by_email: bool = False,
+    custom_ignore_patterns: Optional[List[str]] = None,
+    respect_gitignore: bool = True
 ) -> Tuple[Dict[str, ContributorStats], List[TimeBucketStats], int, int, int]:
     """
     Parse commit logs with --numstat and mailmap.
-    Returns:
-        contributors: Dict[key -> ContributorStats]
-        time_series: List[TimeBucketStats] sorted chronologically
-        total_commits: int
-        total_additions: int
-        total_deletions: int
+    Filters files against .gitignore and custom ignore patterns.
     """
     cmd = [
         "log",
@@ -202,19 +258,10 @@ def parse_commit_history(
     if res.returncode != 0:
         return {}, [], 0, 0, 0
 
-    contributors: Dict[str, ContributorStats] = {}
-    total_commits = 0
-    total_additions = 0
-    total_deletions = 0
-
-    # Bucket tracking: (year, week) -> stats
-    weekly_buckets: Dict[Tuple[int, int], TimeBucketStats] = {}
-
-    current_author_key: Optional[str] = None
-    current_author_name: str = ""
-    current_author_email: str = ""
-    current_commit_date: Optional[datetime] = None
-    current_bucket_key: Optional[Tuple[int, int]] = None
+    # First pass: parse commits and gather all touched file paths
+    raw_commits = []
+    current_commit = None
+    all_touched_files = set()
 
     for line in res.stdout.splitlines():
         line = line.strip()
@@ -234,69 +281,107 @@ def parse_commit_history(
             except Exception:
                 commit_dt = datetime.fromtimestamp(epoch_time, tz=timezone.utc)
 
-            total_commits += 1
-
-            author_key = author_email.lower() if by_email and author_email else author_name
-            if author_key not in contributors:
-                contributors[author_key] = ContributorStats(
-                    name=author_name,
-                    email=author_email
-                )
-
-            contrib = contributors[author_key]
-            contrib.commits += 1
-
-            # Update first / last commit dates
-            if contrib.first_commit_date is None or commit_dt < contrib.first_commit_date:
-                contrib.first_commit_date = commit_dt
-            if contrib.last_commit_date is None or commit_dt > contrib.last_commit_date:
-                contrib.last_commit_date = commit_dt
-
-            # Prepare time bucket
-            cal = commit_dt.isocalendar()
-            bucket_key = (cal.year, cal.week)
-            if bucket_key not in weekly_buckets:
-                # Monday of that week
-                period_label = f"{cal.year}-W{cal.week:02d}"
-                weekly_buckets[bucket_key] = TimeBucketStats(
-                    period_label=period_label,
-                    timestamp=epoch_time,
-                    commits=0,
-                    additions=0,
-                    deletions=0,
-                    author_commits=defaultdict(int)
-                )
-
-            bucket = weekly_buckets[bucket_key]
-            bucket.commits += 1
-            bucket.author_commits[author_key] = bucket.author_commits.get(author_key, 0) + 1
-
-            current_author_key = author_key
-            current_author_name = author_name
-            current_author_email = author_email
-            current_commit_date = commit_dt
-            current_bucket_key = bucket_key
-
-        else:
-            # Numstat line: <additions>\t<deletions>\t<filename>
+            current_commit = {
+                "hash": commit_hash,
+                "name": author_name,
+                "email": author_email,
+                "epoch": epoch_time,
+                "dt": commit_dt,
+                "files": []
+            }
+            raw_commits.append(current_commit)
+        elif current_commit is not None:
             parts = line.split("\t")
-            if len(parts) >= 2 and current_author_key:
-                add_str, del_str = parts[0].strip(), parts[1].strip()
-                # Skip binary changes indicated by "-"
-                if add_str.isdigit() and del_str.isdigit():
-                    adds = int(add_str)
-                    dels = int(del_str)
+            if len(parts) >= 3:
+                add_str, del_str, filepath = parts[0].strip(), parts[1].strip(), parts[2].strip()
+                # Handle rename format e.g. "path/{old => new}/file.py"
+                if " => " in filepath:
+                    if "{" in filepath and "}" in filepath:
+                        pre, rest = filepath.split("{", 1)
+                        mid, post = rest.split("}", 1)
+                        filepath = pre + mid.split(" => ")[-1] + post
+                    else:
+                        filepath = filepath.split(" => ")[-1]
 
-                    contributors[current_author_key].additions += adds
-                    contributors[current_author_key].deletions += dels
-                    total_additions += adds
-                    total_deletions += dels
+                current_commit["files"].append((add_str, del_str, filepath))
+                all_touched_files.add(filepath)
 
-                    if current_bucket_key and current_bucket_key in weekly_buckets:
-                        weekly_buckets[current_bucket_key].additions += adds
-                        weekly_buckets[current_bucket_key].deletions += dels
+    # Check gitignore for all touched files
+    git_ignored = query_git_ignored_files(repo_path, all_touched_files) if respect_gitignore else set()
 
-    # Sort time series by year, week
+    # Second pass: compute stats for non-ignored files
+    contributors: Dict[str, ContributorStats] = {}
+    weekly_buckets: Dict[Tuple[int, int], TimeBucketStats] = {}
+    total_commits = 0
+    total_additions = 0
+    total_deletions = 0
+
+    has_filter = bool(custom_ignore_patterns) or bool(git_ignored)
+
+    for c in raw_commits:
+        author_name = c["name"]
+        author_email = c["email"]
+        commit_dt = c["dt"]
+        epoch_time = c["epoch"]
+        files = c["files"]
+
+        # Filter out ignored files
+        valid_files = [
+            (adds, dels, path)
+            for adds, dels, path in files
+            if not should_ignore_path(path, custom_ignore_patterns, git_ignored)
+        ]
+
+        # If file filtering is active and commit has files, but all files were ignored, skip commit
+        if has_filter and files and not valid_files:
+            continue
+
+        total_commits += 1
+
+        author_key = author_email.lower() if by_email and author_email else author_name
+        if author_key not in contributors:
+            contributors[author_key] = ContributorStats(
+                name=author_name,
+                email=author_email
+            )
+
+        contrib = contributors[author_key]
+        contrib.commits += 1
+
+        if contrib.first_commit_date is None or commit_dt < contrib.first_commit_date:
+            contrib.first_commit_date = commit_dt
+        if contrib.last_commit_date is None or commit_dt > contrib.last_commit_date:
+            contrib.last_commit_date = commit_dt
+
+        # Prepare weekly bucket
+        cal = commit_dt.isocalendar()
+        bucket_key = (cal.year, cal.week)
+        if bucket_key not in weekly_buckets:
+            period_label = f"{cal.year}-W{cal.week:02d}"
+            weekly_buckets[bucket_key] = TimeBucketStats(
+                period_label=period_label,
+                timestamp=epoch_time,
+                commits=0,
+                additions=0,
+                deletions=0,
+                author_commits=defaultdict(int)
+            )
+
+        bucket = weekly_buckets[bucket_key]
+        bucket.commits += 1
+        bucket.author_commits[author_key] = bucket.author_commits.get(author_key, 0) + 1
+
+        for add_str, del_str, _ in valid_files:
+            if add_str.isdigit() and del_str.isdigit():
+                adds = int(add_str)
+                dels = int(del_str)
+                contrib.additions += adds
+                contrib.deletions += dels
+                total_additions += adds
+                total_deletions += dels
+                bucket.additions += adds
+                bucket.deletions += dels
+
     time_series = [
         weekly_buckets[k] for k in sorted(weekly_buckets.keys())
     ]
@@ -340,24 +425,28 @@ def compute_blame_stats(
     by_email: bool = False,
     smart_filter: bool = True,
     allowed_extensions: Optional[Set[str]] = None,
+    custom_ignore_patterns: Optional[List[str]] = None,
+    respect_gitignore: bool = True,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     max_workers: int = 16
 ) -> Tuple[Dict[str, int], int, int]:
     """
     Run parallel git blame across tracked files to compute current line ownership.
-    Returns:
-        ownership: Dict[author_key -> lines_count]
-        blamed_files_count: int
-        total_files_count: int
+    Respects .gitignore rules, custom ignore patterns, and smart filtering.
     """
     all_files = get_tracked_files(repo_path, branch)
     total_files = len(all_files)
     if total_files == 0:
         return {}, 0, 0
 
+    # Query .gitignore for tracked files
+    git_ignored = query_git_ignored_files(repo_path, all_files) if respect_gitignore else set()
+
+    # Filter files: exclude gitignored, custom ignored, smart ignored, or non-matching extensions
     eligible_files = [
         f for f in all_files
-        if is_smart_eligible_file(f, allowed_extensions, smart_filter)
+        if not should_ignore_path(f, custom_ignore_patterns, git_ignored)
+        and is_smart_eligible_file(f, allowed_extensions, smart_filter)
     ]
 
     total_eligible = len(eligible_files)
@@ -399,6 +488,8 @@ def analyze_repository(
     no_blame: bool = False,
     smart_filter: bool = True,
     allowed_extensions: Optional[Set[str]] = None,
+    custom_ignore_patterns: Optional[List[str]] = None,
+    respect_gitignore: bool = True,
     blame_progress_callback: Optional[Callable[[int, int, str], None]] = None
 ) -> RepoSummary:
     """Analyze repository and produce complete RepoSummary."""
@@ -429,10 +520,11 @@ def analyze_repository(
         branch=actual_branch,
         since=since,
         until=until,
-        by_email=by_email
+        by_email=by_email,
+        custom_ignore_patterns=custom_ignore_patterns,
+        respect_gitignore=respect_gitignore
     )
 
-    # Determine earliest and latest commit dates
     first_date = min((c.first_commit_date for c in contributors.values() if c.first_commit_date), default=None)
     last_date = max((c.last_commit_date for c in contributors.values() if c.last_commit_date), default=None)
 
@@ -447,17 +539,17 @@ def analyze_repository(
             by_email=by_email,
             smart_filter=smart_filter,
             allowed_extensions=allowed_extensions,
+            custom_ignore_patterns=custom_ignore_patterns,
+            respect_gitignore=respect_gitignore,
             progress_callback=blame_progress_callback
         )
 
         total_current_lines = sum(blame_counts.values())
 
-        # Map blame lines to contributors
         for author_key, lines in blame_counts.items():
             if author_key in contributors:
                 contributors[author_key].current_lines = lines
             else:
-                # In case an author exists in blame who had no commits in filtered log
                 new_contrib = ContributorStats(
                     name=author_key,
                     email=author_key if by_email else "",

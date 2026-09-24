@@ -7,7 +7,7 @@ from datetime import datetime
 import json
 import os
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 # Ensure UTF-8 output encoding across Windows shells
 if hasattr(sys.stdout, "reconfigure"):
@@ -93,115 +93,148 @@ def repo_summary_to_dict(summary: RepoSummary) -> Dict[str, Any]:
 
 
 def parse_args(args=None):
-    """Parse command-line arguments."""
+    """Parse command-line arguments with intuitive help categories and examples."""
     parser = argparse.ArgumentParser(
         prog="gitanalyzer",
-        description="⚡ Local Git Repository Insights & Contributions Analyzer",
+        description="⚡ GitAnalyzer - Local Git Repository Contributor Insights & Code Ownership",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  gitanalyzer                           # Analyze current directory
-  gitanalyzer C:/path/to/my-repo         # Analyze specified git repo
-  gitanalyzer . -p                      # Analyze and display matplotlib activity chart
-  gitanalyzer . --save-plot chart.png   # Save chart to an image file
-  gitanalyzer . --since "2024-01-01"     # Filter commits since Jan 1, 2024
-  gitanalyzer . --sort lines            # Sort contributors by surviving code lines
-  gitanalyzer . --no-blame              # Fast analysis skipping git blame
-  gitanalyzer . --json                  # Output summary as JSON
+QUICK CHEATSHEET & COMMON EXAMPLES:
+  gitanalyzer                            Analyze current repo
+  gitanalyzer C:/path/to/my-repo          Analyze specific repository path
+  gitanalyzer -p                         Pop up interactive GitHub-style activity graph
+  gitanalyzer --save-plot chart.png      Export activity graph to PNG without opening window
+  gitanalyzer -i "tests/*" "docs/*"      Ignore tests and documentation folders
+  gitanalyzer --sort lines               Rank contributors by surviving code lines (ownership)
+  gitanalyzer --since "3 months ago"     Analyze recent sprint or quarter activity
+  gitanalyzer --no-blame                 Instant summary on massive repositories (skips blame)
+  gitanalyzer --json > report.json       Export full analysis to JSON
         """
     )
 
+    # Positional
     parser.add_argument(
         "repo_path",
         nargs="?",
         default=".",
-        help="Path to git repository directory (default: current directory)"
+        help="Path to Git repository directory (default: current directory '.')"
     )
 
-    parser.add_argument(
+    # Group 1: Repository & Revision Scope
+    group_repo = parser.add_argument_group("Repository & Revision Scope")
+    group_repo.add_argument(
         "-b", "--branch",
+        metavar="REF",
         default=None,
-        help="Target branch or commit ref to analyze (default: current branch / HEAD)"
+        help="Target branch, tag, or commit ref to inspect (default: active branch / HEAD)"
     )
-
-    parser.add_argument(
+    group_repo.add_argument(
         "-s", "--since",
+        metavar="DATE/REF",
         default=None,
-        help="Filter commits since date or ref (e.g., '2024-01-01', '1 month ago')"
+        help="Include commits after date or ref (e.g. '2024-01-01', '3 months ago')"
     )
-
-    parser.add_argument(
+    group_repo.add_argument(
         "-u", "--until",
+        metavar="DATE/REF",
         default=None,
-        help="Filter commits until date or ref (e.g., '2024-12-31')"
+        help="Include commits before date or ref (e.g. '2024-12-31')"
     )
 
-    parser.add_argument(
+    # Group 2: File Filtering & Exclusions
+    group_filter = parser.add_argument_group("File Filtering & Exclusions")
+    group_filter.add_argument(
+        "-i", "--ignore", "--exclude",
+        dest="ignore",
+        nargs="+",
+        metavar="PATTERN",
+        default=None,
+        help="Skip files or folders matching patterns (e.g. -i 'tests/*' 'docs/' '*.min.js')"
+    )
+    group_filter.add_argument(
+        "--no-gitignore",
+        action="store_true",
+        help="Do not ignore files matched by .gitignore (.gitignore is respected by default)"
+    )
+    group_filter.add_argument(
+        "-e", "--ext",
+        nargs="+",
+        metavar="EXT",
+        default=None,
+        help="Only calculate code ownership for specific file extensions (e.g. -e .py .js .ts)"
+    )
+    group_filter.add_argument(
+        "--all-files",
+        action="store_true",
+        help="Blame all tracked files (disables smart filtering of lockfiles & binaries)"
+    )
+    group_filter.add_argument(
+        "--no-blame",
+        action="store_true",
+        help="Skip git blame ownership analysis entirely (instant execution on huge repos)"
+    )
+
+    # Group 3: Contributor Display
+    group_contrib = parser.add_argument_group("Contributor Display")
+    group_contrib.add_argument(
+        "--sort",
+        choices=["commits", "additions", "deletions", "lines", "net", "churn"],
+        default="commits",
+        help="Sort contributor table by metric (default: 'commits')"
+    )
+    group_contrib.add_argument(
+        "--top",
+        type=int,
+        metavar="N",
+        default=20,
+        help="Number of top contributors to show in table (default: 20, use 0 for all)"
+    )
+    group_contrib.add_argument(
+        "--by-email",
+        action="store_true",
+        help="Identify and group contributors by author email instead of name"
+    )
+
+    # Group 4: Output & Visualization
+    group_output = parser.add_argument_group("Output & Visualization")
+    group_output.add_argument(
         "-p", "--plot",
         action="store_true",
         help="Open interactive Matplotlib contribution & activity graph window"
     )
-
-    parser.add_argument(
+    group_output.add_argument(
         "--save-plot",
         metavar="FILEPATH",
         default=None,
-        help="Export Matplotlib contribution graph to image file (e.g., contributions.png)"
+        help="Export Matplotlib contribution graph to image file (e.g. contributions.png)"
     )
-
-    parser.add_argument(
-        "--no-blame",
-        action="store_true",
-        help="Skip calculating current surviving lines (blame) for faster execution"
-    )
-
-    parser.add_argument(
-        "--all-files",
-        action="store_true",
-        help="Blame all tracked files (disables smart exclusion of lockfiles and minified code)"
-    )
-
-    parser.add_argument(
-        "-e", "--ext",
-        nargs="+",
-        default=None,
-        help="Filter blame to specific file extensions (e.g., -e .py .js .ts)"
-    )
-
-    parser.add_argument(
-        "--top",
-        type=int,
-        default=20,
-        help="Number of top contributors to display in table (default: 20, 0 for all)"
-    )
-
-    parser.add_argument(
-        "--sort",
-        choices=["commits", "additions", "deletions", "lines", "net", "churn"],
-        default="commits",
-        help="Metric to sort contributor table by (default: commits)"
-    )
-
-    parser.add_argument(
-        "--by-email",
-        action="store_true",
-        help="Group and identify contributors by author email instead of name"
-    )
-
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=16,
-        help="Number of parallel worker threads for git blame (default: 16)"
-    )
-
-    parser.add_argument(
+    group_output.add_argument(
         "--json",
         action="store_true",
-        help="Output results in JSON format"
+        help="Output full analysis results as structured JSON"
+    )
+    group_output.add_argument(
+        "-w", "--workers",
+        type=int,
+        metavar="N",
+        default=16,
+        help="Number of worker threads for parallel git blame (default: 16)"
     )
 
     return parser.parse_args(args)
+
+
+def flatten_ignore_patterns(raw_patterns: Optional[List[str]]) -> List[str]:
+    """Flatten space-separated and comma-separated ignore patterns."""
+    if not raw_patterns:
+        return []
+    result = []
+    for item in raw_patterns:
+        for sub in item.split(","):
+            cleaned = sub.strip()
+            if cleaned:
+                result.append(cleaned)
+    return result
 
 
 def main(args=None):
@@ -210,6 +243,9 @@ def main(args=None):
     allowed_exts = None
     if parsed.ext:
         allowed_exts = {e if e.startswith(".") else f".{e}" for e in parsed.ext}
+
+    ignore_patterns = flatten_ignore_patterns(parsed.ignore)
+    respect_gitignore = not parsed.no_gitignore
 
     # Progress bar setup for blame
     progress = None
@@ -248,6 +284,8 @@ def main(args=None):
                     no_blame=parsed.no_blame,
                     smart_filter=not parsed.all_files,
                     allowed_extensions=allowed_exts,
+                    custom_ignore_patterns=ignore_patterns,
+                    respect_gitignore=respect_gitignore,
                     blame_progress_callback=blame_progress_callback
                 )
         else:
@@ -260,6 +298,8 @@ def main(args=None):
                 no_blame=parsed.no_blame,
                 smart_filter=not parsed.all_files,
                 allowed_extensions=allowed_exts,
+                custom_ignore_patterns=ignore_patterns,
+                respect_gitignore=respect_gitignore,
                 blame_progress_callback=None
             )
 
@@ -283,11 +323,16 @@ def main(args=None):
         filter_parts.append(f"until={parsed.until}")
     if allowed_exts:
         filter_parts.append(f"extensions={', '.join(sorted(allowed_exts))}")
+    if ignore_patterns:
+        filter_parts.append(f"ignored={', '.join(ignore_patterns)}")
+    if not respect_gitignore:
+        filter_parts.append(".gitignore=disabled")
+
     filter_desc = ", ".join(filter_parts) if filter_parts else None
 
     print_header(summary, filter_desc)
     print_summary_cards(summary)
-    
+
     top_limit = parsed.top if parsed.top > 0 else None
     print_contributors_table(summary, sort_by=parsed.sort, top_n=top_limit)
     print_footer_tips(plot_requested=parsed.plot or bool(parsed.save_plot))

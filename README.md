@@ -58,25 +58,39 @@ gitanalyzer . -p
 gitanalyzer . --save-plot contributions.png
 ```
 
-### 5. Sort by Current Surviving Code Lines (Ownership)
+### 5. Skip Specific Files or Folders
+```bash
+gitanalyzer . -i "tests/*" "docs/*" "*.min.js"
+```
+
+### 6. Sort by Current Surviving Code Lines (Ownership)
 ```bash
 gitanalyzer . --sort lines
 ```
 
-### 6. Filter by Date Range or Branch
+### 7. Filter by Date Range or Branch
 ```bash
 gitanalyzer . --since "2024-01-01" --until "2024-12-31" -b main
 ```
 
-### 7. Instant Blameless Mode (Fast on Huge Monorepos)
+### 8. Instant Blameless Mode (Fast on Huge Monorepos)
 ```bash
 gitanalyzer . --no-blame
 ```
 
-### 8. Machine-Readable JSON Output
+### 9. Machine-Readable JSON Output
 ```bash
 gitanalyzer . --json
 ```
+
+---
+
+## Adding to PATH
+
+To use `gitanalyzer` from any terminal or PowerShell window:
+1. Run `pip install -e .` from this directory.
+2. Ensure your Python Scripts folder (e.g. `C:\Users\<User>\AppData\Local\Programs\Python\PythonXX\Scripts`) is in your system `PATH`.
+3. You can now run `gitanalyzer` or `gitanalyzer -h` from any directory!
 
 ---
 
@@ -86,16 +100,19 @@ gitanalyzer . --json
 |------|-------|-------------|
 | `repo_path` | | Path to the Git repository (default: `.`) |
 | `--branch` | `-b` | Specific branch or commit ref to analyze (default: HEAD) |
-| `--since` | `-s` | Include commits after date or git revision (e.g. `2024-01-01`) |
+| `--since` | `-s` | Include commits after date or git revision (e.g. `2024-01-01`, `3 months ago`) |
 | `--until` | `-u` | Include commits before date or git revision |
+| `--ignore` | `-i` | Skip files or folders matching patterns (e.g. `-i 'tests/*' 'docs/' '*.min.js'`) |
+| `--no-gitignore` | | Do not ignore files in `.gitignore` (`.gitignore` is respected by default) |
 | `--plot` | `-p` | Open interactive Matplotlib contribution chart window |
 | `--save-plot PATH` | | Export chart to an image file (PNG, SVG, PDF) |
 | `--sort METRIC` | | Sort table by: `commits`, `additions`, `deletions`, `lines`, `net`, `churn` |
-| `--top N` | | Limit contributor table to top N authors (default: 20) |
+| `--top N` | | Limit contributor table to top N authors (default: 20, 0 for all) |
 | `--by-email` | | Group contributors by email instead of author name |
 | `--no-blame` | | Skip blame line ownership analysis for instant speed |
 | `--all-files` | | Disable smart filtering and blame all tracked files |
 | `--ext .py .js` | `-e` | Only calculate line ownership for specified file extensions |
 | `--workers N` | `-w` | Number of worker threads for parallel blame (default: 16) |
 | `--json` | | Output report as structured JSON |
-| `--help` | `-h` | Show help message and exit |
+| `--help` | `-h` | Show intuitive help guide with cheatsheet and exit |
+

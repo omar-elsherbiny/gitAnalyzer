@@ -163,5 +163,58 @@ class TestGitAnalyzer(unittest.TestCase):
         self.assertEqual(len(summary.contributors), 0)
 
 
+    def test_gitignore_exclusion(self):
+        # Create .gitignore ignoring *.log and temp/
+        with open(os.path.join(self.repo_dir, ".gitignore"), "w", encoding="utf-8") as f:
+            f.write("*.log\ntemp/\n")
+        self._run_git(["add", ".gitignore"])
+        self._run_git(["commit", "-m", "Add .gitignore"])
+
+        # Force add a log file and a temp file (as sometimes happens in git history)
+        log_path = os.path.join(self.repo_dir, "debug.log")
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("line 1\nline 2\n")
+        self._run_git(["add", "-f", "debug.log"])
+        self._run_git(["commit", "-m", "Commit log file"])
+
+        # Add a normal code file
+        self._create_and_commit("service.py", "def run():\n    pass\n", "Alice", "alice@test.com", "Add service")
+
+        # When gitignore is respected (default), debug.log should be excluded from churn and blame
+        summary_default = analyze_repository(self.repo_dir, respect_gitignore=True)
+        # debug.log has 2 lines, service.py has 2 lines, .gitignore has 2 lines
+        # alice added service.py (2 lines)
+        alice = summary_default.contributors["Alice"]
+        self.assertEqual(alice.current_lines, 2)
+        # Total current lines should not include debug.log (2 lines for .gitignore + 2 for service.py = 4)
+        self.assertEqual(summary_default.total_current_lines, 4)
+
+        # When gitignore is disabled (--no-gitignore), debug.log should be included (2 + 2 + 2 = 6)
+        summary_no_gitignore = analyze_repository(self.repo_dir, respect_gitignore=False)
+        self.assertEqual(summary_no_gitignore.total_current_lines, 6)
+
+    def test_custom_ignore_patterns(self):
+        self._create_and_commit("main.py", "x = 1\n", "DevA", "deva@test.com", "commit code")
+        self._create_and_commit("tests/test_main.py", "assert True\n", "DevA", "deva@test.com", "commit tests")
+        self._create_and_commit("docs/readme.txt", "doc text\n", "DevB", "devb@test.com", "commit docs")
+
+        # Without ignore, both DevA (2 commits) and DevB (1 commit) exist
+        summary_all = analyze_repository(self.repo_dir)
+        self.assertIn("DevB", summary_all.contributors)
+        self.assertEqual(summary_all.contributors["DevA"].commits, 2)
+
+        # Ignore tests and docs
+        summary_filtered = analyze_repository(
+            self.repo_dir,
+            custom_ignore_patterns=["tests/*", "docs/*"]
+        )
+        # DevB only committed docs, so DevB should not appear in filtered commits
+        self.assertNotIn("DevB", summary_filtered.contributors)
+        # DevA's test commit was skipped, leaving 1 code commit
+        self.assertEqual(summary_filtered.contributors["DevA"].commits, 1)
+        self.assertEqual(summary_filtered.contributors["DevA"].current_lines, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
+
